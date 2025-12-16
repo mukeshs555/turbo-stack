@@ -237,14 +237,25 @@ reload_webservers() {
         fi
     fi
 
-    if command -v docker >/dev/null && docker compose ps -q "$WEBSERVER_SERVICE" >/dev/null 2>&1; then
-        yellow_message "Reloading web servers..."
-        if [[ "${STACK_MODE:-hybrid}" == "hybrid" ]]; then
-            docker compose exec "$WEBSERVER_SERVICE" bash -c "service apache2 reload"
-        fi
-        docker compose exec reverse-proxy nginx -s reload
-        green_message "Web servers reloaded."
+    if ! command -v docker >/dev/null 2>&1; then
+        return 0
     fi
+
+    # Only reload if containers are actually running (docker compose ps returns 0 even when empty)
+    local ws_cid rp_cid
+    ws_cid="$(docker compose ps -q "$WEBSERVER_SERVICE" 2>/dev/null || true)"
+    rp_cid="$(docker compose ps -q reverse-proxy 2>/dev/null || true)"
+
+    if [[ -z "$ws_cid" || -z "$rp_cid" ]]; then
+        return 0
+    fi
+
+    yellow_message "Reloading web servers..."
+    if [[ "${STACK_MODE:-hybrid}" == "hybrid" ]]; then
+        docker compose exec -T "$WEBSERVER_SERVICE" bash -c "service apache2 reload"
+    fi
+    docker compose exec -T reverse-proxy nginx -s reload
+    green_message "Web servers reloaded."
 }
 
 # Ensure Docker is running
@@ -255,7 +266,17 @@ ensure_docker_running() {
         case "$(get_os_type)" in
             mac) open -a Docker ;;
             linux) sudo systemctl start docker ;;
-            windows) start "" "C:\Program Files\Docker\Docker\Docker Desktop.exe" ;;
+            windows)
+                # "start" is a CMD built-in; call it via cmd.exe so it works from Git Bash too.
+                if command_exists cmd.exe; then
+                    cmd.exe /c start "" "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe" >/dev/null 2>&1 || true
+                elif command_exists powershell.exe; then
+                    powershell.exe -NoProfile -Command "Start-Process 'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe'" >/dev/null 2>&1 || true
+                else
+                    error_message "Cannot auto-start Docker Desktop (cmd.exe/powershell.exe not found). Please start Docker manually."
+                    exit 1
+                fi
+                ;;
             *) error_message "Unsupported OS. Please start Docker manually."; exit 1 ;;
         esac
 
@@ -350,7 +371,7 @@ install_mkcert() {
         windows)
             # Windows installation
             if command_exists choco; then
-                choco install mkcert
+                choco install -y mkcert --no-progress
             else
                 error_message "Chocolatey not found. Please install Chocolatey first: https://chocolatey.org/install"
                 return 1
@@ -502,7 +523,13 @@ open_browser() {
             xdg-open "$domain"
             ;;
         windows)
-            start "$domain"
+            if command_exists cmd.exe; then
+                cmd.exe /c start "" "$domain" >/dev/null 2>&1 || true
+            elif command_exists powershell.exe; then
+                powershell.exe -NoProfile -Command "Start-Process '$domain'" >/dev/null 2>&1 || true
+            else
+                error_message "Cannot auto-open browser (cmd.exe/powershell.exe not found). Please open $domain manually."
+            fi
             ;;
         *)
             error_message "Unsupported OS. Please open $domain manually."
@@ -1081,17 +1108,17 @@ tbs() {
         nginx_file="${NGINX_CONF_DIR}/${domain}.conf"
 
         # Create the vhost directory if it doesn't exist
-        if [[ ! -d $VHOSTS_DIR ]]; then
-            mkdir -p $VHOSTS_DIR
+        if [[ ! -d "$VHOSTS_DIR" ]]; then
+            mkdir -p "$VHOSTS_DIR"
         fi
 
-        if [[ ! -d $NGINX_CONF_DIR ]]; then
-            mkdir -p $NGINX_CONF_DIR
+        if [[ ! -d "$NGINX_CONF_DIR" ]]; then
+            mkdir -p "$NGINX_CONF_DIR"
         fi
 
         # Create the vhost configuration file
         yellow_message "Creating vhost configuration for $domain..."
-        cat >$vhost_file <<EOL
+        cat >"$vhost_file" <<EOL
 <VirtualHost *:80>
     ServerName $domain
     ServerAlias www.$domain
@@ -1190,7 +1217,7 @@ server {
             -e "s|index.html|index.php|g" \
             -e "s|/var/www/html|$app_root|g" \
             -e "s|tbs code|tbs code $app_name|g" \
-            $indexHtml > $index_file
+            "$indexHtml" > "$index_file"
         info_message "index.php created at $index_file"
 
         # Enable the new virtual host and reload Apache

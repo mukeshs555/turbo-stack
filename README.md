@@ -276,7 +276,7 @@ You can switch modes in `.env` or via `tbs config`.
 | **Mailpit (UI)** | 8025 | `8025` |
 | **Mailpit (SMTP)** | 1025 | `1025` |
 | **Redis** | 6379 | `6379` |
-| **Memcached** | 11211 | `11211` (Internal Only) |
+| **Memcached** | 11211 | `11211` (bound to `127.0.0.1` by default) |
 
 ### Adding PHP Extensions
 Edit `./bin/php<version>/Dockerfile` (e.g., `./bin/php8.2/Dockerfile`) and run `tbs build`.

@@ -25,7 +25,6 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
 NC='\033[0m' # No Color
 
 print_header() {
@@ -43,10 +42,6 @@ error_message() {
     echo -e "  ${RED}Error: $1${NC}"
 }
 
-value_message() {
-    echo -e "${BLUE}${1}${NC} ${GREEN}${2}${NC}"
-}
-
 blue_message() {
     echo -e "${BLUE}$1${NC}"
 }
@@ -61,17 +56,6 @@ info_message() {
 
 yellow_message() {
     echo -e "  ${YELLOW}$1${NC}"
-}
-
-attempt_message() {
-    local count=$1
-    local last_attempt=3
-
-    if ((count >= last_attempt)); then
-        yellow_message "Attempt ${count} and last. Please try again."
-    else
-        yellow_message "Attempt ${count}. Please try again."
-    fi
 }
 
 # Function to check if a command exists
@@ -257,6 +241,43 @@ ensure_directories() {
             mkdir -p "$dir" 2>/dev/null || true
         fi
     done
+}
+
+# Check if required containers are running
+check_containers_running() {
+    local check_webserver="${1:-true}"
+    local check_database="${2:-true}"
+    
+    if [[ "$check_webserver" == "true" ]]; then
+        if [[ -z "$(docker compose ps -q "$WEBSERVER_SERVICE")" ]]; then
+            error_message "Webserver container is not running. Please start the stack first."
+            return 1
+        fi
+    fi
+    
+    if [[ "$check_database" == "true" ]]; then
+        if [[ -z "$(docker compose ps -q database)" ]]; then
+            error_message "Database container is not running. Please start the stack first."
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# Execute MySQL command through webserver container
+execute_mysql_command() {
+    local mysql_command="$1"
+    
+    docker compose exec -T "$WEBSERVER_SERVICE" bash -c "exec mysql -uroot -p\"$MYSQL_ROOT_PASSWORD\" -h database $mysql_command" 2>/dev/null
+}
+
+# Execute MySQL dump through webserver container
+execute_mysqldump() {
+    local database="$1"
+    local output_file="$2"
+    
+    docker compose exec -T "$WEBSERVER_SERVICE" bash -c "exec mysqldump -uroot -p\"$MYSQL_ROOT_PASSWORD\" -h database --databases $database" >"$output_file" 2>/dev/null
 }
 
 # Reload Web Servers
@@ -617,12 +638,6 @@ tbs_config() {
         unset IFS
     }
 
-    # Function to read environment variables from a file (either .env or sample.env)
-    read_env_file() {
-        local env_file=$1
-        load_env_file "$env_file" false
-    }
-
     # Function to prompt user to input a valid installation type
     choose_installation_type() {
         local valid_options=("local" "live")
@@ -882,11 +897,11 @@ tbs_config() {
     # Main logic
     if [ -f .env ]; then
         info_message "Reading config from .env..."
-        read_env_file ".env"
+        load_env_file ".env" false
     elif [ -f sample.env ]; then
         yellow_message "No .env file found, using sample.env..."
         cp sample.env .env
-        read_env_file "sample.env"
+        load_env_file "sample.env" false
         existing_env_file=false
     else
         error_message "No .env or sample.env file found."
@@ -1094,6 +1109,12 @@ tbs() {
         app_name=$2
         domain=$3
 
+        # Validate application name (alphanumeric, hyphens, underscores only)
+        if [[ ! $app_name =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            error_message "Application name must contain only alphanumeric characters, hyphens, and underscores."
+            return 1
+        fi
+
         # Set default domain to <app_name>.localhost if not provided
         if [[ -z $domain ]]; then
             domain="${app_name}.localhost"
@@ -1273,6 +1294,12 @@ EOF
 
         app_name=$2
         
+        # Validate application name format
+        if [[ ! $app_name =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            error_message "Invalid application name format."
+            return 1
+        fi
+        
         # Try to find the domain from the vhost file or assume default
         # This is tricky because we don't store the mapping. 
         # We can search for the app_name in the vhosts directory.
@@ -1390,7 +1417,6 @@ EOF
         fi
         ;;
     config)
-
         tbs_config
         ;;
 
@@ -1403,13 +1429,12 @@ EOF
 
         info_message "Backing up Turbo Stack to $backup_file..."
         
-        # Check if webserver is running
-        if [[ -z "$(docker compose ps -q "$WEBSERVER_SERVICE")" ]]; then
-            error_message "Webserver container is not running. Please start the stack first."
+        # Check if required containers are running
+        if ! check_containers_running true true; then
             return 1
         fi
         
-        databases=$(docker compose exec -T "$WEBSERVER_SERVICE" bash -c "exec mysql -uroot -p\"$MYSQL_ROOT_PASSWORD\" -h database -e 'SHOW DATABASES;'" 2>/dev/null | grep -Ev "(Database|information_schema|performance_schema|mysql|phpmyadmin|sys)" || true)
+        databases=$(execute_mysql_command "-e 'SHOW DATABASES;'" | grep -Ev "(Database|information_schema|performance_schema|mysql|phpmyadmin|sys)" || true)
 
         if [[ -z "$databases" ]]; then
             yellow_message "No databases found to backup."
@@ -1423,7 +1448,7 @@ EOF
         for db in $databases; do
             if [[ -n "$db" ]]; then
                 backup_sql_file="$temp_sql_dir/db_backup_$db.sql"
-                if ! docker compose exec -T "$WEBSERVER_SERVICE" bash -c "exec mysqldump -uroot -p\"$MYSQL_ROOT_PASSWORD\" -h database --databases $db" >"$backup_sql_file" 2>/dev/null; then
+                if ! execute_mysqldump "$db" "$backup_sql_file"; then
                     yellow_message "Failed to backup database: $db"
                     rm -f "$backup_sql_file"
                 fi
@@ -1480,21 +1505,31 @@ EOF
         done
 
         read -p "Choose a backup number to restore: " backup_num
-        if [[ "$backup_num" -gt 0 && "$backup_num" -le "${#backup_files[@]}" ]]; then
-            selected_backup="${backup_files[$((backup_num - 1))]}"
-        else
-            error_message "Invalid selection."
+        # Validate input is numeric and within range
+        if [[ ! "$backup_num" =~ ^[0-9]+$ ]] || [[ "$backup_num" -lt 1 ]] || [[ "$backup_num" -gt "${#backup_files[@]}" ]]; then
+            error_message "Invalid selection. Please enter a number between 1 and ${#backup_files[@]}."
             return 1
         fi
+        
+        selected_backup="${backup_files[$((backup_num - 1))]}"
 
         info_message "Restoring Turbo Stack from $selected_backup..."
+        
+        # Check if required containers are running
+        if ! check_containers_running true true; then
+            return 1
+        fi
         
         # Create temp directory for extraction
         temp_restore_dir="$backup_dir/restore_temp"
         mkdir -p "$temp_restore_dir"
         
-        # Extract backup
-        tar -xzf "$selected_backup" -C "$temp_restore_dir"
+        # Extract backup with error handling
+        if ! tar -xzf "$selected_backup" -C "$temp_restore_dir" 2>/dev/null; then
+            error_message "Failed to extract backup archive. The file may be corrupted."
+            rm -rf "$temp_restore_dir"
+            return 1
+        fi
         
         # Restore Databases
         if [[ -d "$temp_restore_dir/sql" ]]; then
@@ -1505,7 +1540,6 @@ EOF
                     info_message "Restoring database: $db_name"
                     # Pipe content directly to mysql client
                     # Note: mysqldump with --databases includes CREATE DATABASE statement
-                    # We use -T to disable pseudo-tty allocation which allows piping
                     if ! cat "$sql_file" | docker compose exec -T "$WEBSERVER_SERVICE" bash -c "exec mysql -uroot -p\"$MYSQL_ROOT_PASSWORD\" -h database" 2>/dev/null; then
                         yellow_message "Failed to restore database: $db_name"
                     fi

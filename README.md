@@ -213,7 +213,6 @@ You can switch modes in `.env` or via `tbs config`.
     *   **PHP-FPM** handles code execution directly for maximum speed.
     *   *Note: `.htaccess` files are NOT supported in this mode.*
 *   Ideal for Laravel, Symfony, and high-performance modern apps.
-*   *Note: `.htaccess` files are ignored in this mode.*
 
 ### 3. Node.js Mode (Coming Soon)
 **Nginx ➡ Node.js**

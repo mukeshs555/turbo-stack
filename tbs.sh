@@ -654,7 +654,7 @@ tbs_config() {
     # Function to prompt user to input a valid database
     choose_database() {
         local legacy_php=false
-        if [[ "$PHPVERSION" =~ php5\.[4-6] || "$PHPVERSION" == "php7.1" || "$PHPVERSION" == "php7.2" || "$PHPVERSION" == "php7.3" || "$PHPVERSION" == "php7.4" ]]; then
+        if [[ "$PHPVERSION" == "php7.4" ]]; then
             legacy_php=true
         fi
 

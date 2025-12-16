@@ -274,6 +274,26 @@ ensure_docker_running() {
     fi
 }
 
+cleanup_stack_networks() {
+    # Remove leftover project networks that sometimes stay attached on Windows
+    local frontend_net="${COMPOSE_PROJECT_NAME:-turbo-stack}-frontend"
+    local backend_net="${COMPOSE_PROJECT_NAME:-turbo-stack}-backend"
+
+    for net in "$frontend_net" "$backend_net"; do
+        if docker network inspect "$net" >/dev/null 2>&1; then
+            yellow_message "Cleaning up network $net..."
+            local containers
+            containers=$(docker network inspect "$net" --format '{{range $id,$c := .Containers}}{{$id}} {{end}}')
+            if [[ -n "$containers" ]]; then
+                for cid in $containers; do
+                    docker network disconnect -f "$net" "$cid" >/dev/null 2>&1 || true
+                done
+            fi
+            docker network rm "$net" >/dev/null 2>&1 || true
+        fi
+    done
+}
+
 print_line() {
     echo ""
     echo -e "${BLUE}$(printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' -)${NC}"
@@ -994,6 +1014,7 @@ tbs() {
         fi
 
         docker compose $PROFILES down --remove-orphans
+        cleanup_stack_networks
         green_message "Turbo Stack is stopped"
         ;;
 
@@ -1008,7 +1029,9 @@ tbs() {
         if [[ "$APP_ENV" == "development" ]]; then
             PROFILES="$PROFILES --profile development"
         fi
-        docker compose down --remove-orphans && docker compose $PROFILES up -d
+        docker compose down --remove-orphans
+        cleanup_stack_networks
+        docker compose $PROFILES up -d
         green_message "Turbo Stack restarted."
         ;;
 
@@ -1019,6 +1042,7 @@ tbs() {
             PROFILES="$PROFILES --profile development"
         fi
         docker compose down --remove-orphans
+        cleanup_stack_networks
         docker compose $PROFILES up -d --build
         green_message "Turbo Stack rebuilt and running."
         ;;

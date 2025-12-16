@@ -1008,12 +1008,9 @@ tbs() {
 
     # Stop the Turbo Stack
     stop)
-        PROFILES="--profile ${STACK_MODE:-hybrid}"
-        if [[ "$APP_ENV" == "development" ]]; then
-            PROFILES="$PROFILES --profile development"
-        fi
-
-        docker compose $PROFILES down --remove-orphans
+        # Include all profiles to ensure every service is stopped
+        ALL_PROFILES="--profile hybrid --profile thunder --profile development --profile tools"
+        docker compose $ALL_PROFILES down --remove-orphans
         cleanup_stack_networks
         green_message "Turbo Stack is stopped"
         ;;
@@ -1029,7 +1026,9 @@ tbs() {
         if [[ "$APP_ENV" == "development" ]]; then
             PROFILES="$PROFILES --profile development"
         fi
-        docker compose down --remove-orphans
+        # Always tear down everything regardless of profile before restart
+        ALL_PROFILES="--profile hybrid --profile thunder --profile development --profile tools"
+        docker compose $ALL_PROFILES down --remove-orphans
         cleanup_stack_networks
         docker compose $PROFILES up -d
         green_message "Turbo Stack restarted."
@@ -1041,7 +1040,9 @@ tbs() {
         if [[ "$APP_ENV" == "development" ]]; then
             PROFILES="$PROFILES --profile development"
         fi
-        docker compose down --remove-orphans
+        # Always tear down everything regardless of profile before rebuild
+        ALL_PROFILES="--profile hybrid --profile thunder --profile development --profile tools"
+        docker compose $ALL_PROFILES down --remove-orphans
         cleanup_stack_networks
         docker compose $PROFILES up -d --build
         green_message "Turbo Stack rebuilt and running."
